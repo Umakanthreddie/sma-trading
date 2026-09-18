@@ -8,6 +8,8 @@ Tabs:
   🤖 Auto-Trader     — Paper/live trading control panel (internal simulator)
   🎯 Manual Signals  — Scan the full ~100-stock watchlist and decide what
                         to place yourself in the Webull app
+  🗞️ All News        — Every headline for your watchlist in one feed,
+                        newest first, with sentiment color-coding
 
 Run:
   streamlit run dashboard.py
@@ -75,6 +77,25 @@ section[data-testid="stSidebar"] { background-color: #1a1d2e; }
 
 [data-testid="metric-container"] { background:#1a1d2e; border:1px solid #2d2f45; border-radius:8px; padding:10px; }
 hr { border-color:#2d2f45; }
+
+/* Buttons — explicit colors so secondary buttons aren't white-text-on-white */
+.stButton > button {
+    background-color: #1a1d2e;
+    color: #fff !important;
+    border: 1px solid #4a4d63;
+}
+.stButton > button:hover {
+    border-color: #4fc3f7;
+    color: #4fc3f7 !important;
+}
+.stButton > button[kind="primary"] {
+    background-color: #ff5252;
+    color: #fff !important;
+    border: none;
+}
+.stButton > button[kind="primary"]:hover {
+    background-color: #ff6e6e;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -132,12 +153,13 @@ st.markdown("---")
 # ─────────────────────────────────────────────────────────────
 # Tabs
 # ─────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 Live Signals",
     "🔍 Top Stocks",
     "📰 AI Predictions",
     "🤖 Auto-Trader",
     "🎯 Manual Signals",
+    "🗞️ All News",
 ])
 
 
@@ -285,15 +307,15 @@ with tab2:
                 return ""
 
             styled = (top_df.style
-                .applymap(color_score,   subset=["momentum_score"])
-                .applymap(color_return,  subset=["return_1w", "return_1m"])
+                .map(color_score,   subset=["Score"])
+                .map(color_return,  subset=["1W %", "1M %", "3M %"])
             )
 
             st.dataframe(styled, use_container_width=True, height=600)
 
             # Add top stocks to watchlist button
             if st.button("➕ Add Top 10 to Watchlist"):
-                top10 = top_df["ticker"].head(10).tolist()
+                top10 = top_df["Ticker"].head(10).tolist()
                 st.session_state["extra_tickers"] = top10
                 st.success(f"Added to session watchlist: {', '.join(top10)}")
     except Exception as e:
@@ -455,7 +477,7 @@ with tab4:
                 return "color:#00e676;font-weight:bold" if val > 0 else "color:#ff5252;font-weight:bold" if val < 0 else ""
             return ""
 
-        styled_pos = pos_df.style.applymap(style_pnl, subset=["P&L $", "P&L %"])
+        styled_pos = pos_df.style.map(style_pnl, subset=["P&L $", "P&L %"])
         st.dataframe(styled_pos, use_container_width=True)
     else:
         st.info("No open positions.")
@@ -520,7 +542,7 @@ with tab4:
             if val == "SELL": return "background-color:#3d0000;color:#ff5252;font-weight:bold"
             return ""
 
-        styled_log = log_df.style.applymap(style_action, subset=["action"])
+        styled_log = log_df.style.map(style_action, subset=["action"])
         st.dataframe(styled_log, use_container_width=True, height=300)
     else:
         st.info("No trades yet. Click 'Run Auto-Trade Now' to start.")
@@ -631,7 +653,7 @@ with tab5:
                     if "SELL" in val:        return "background-color:#280a0a;color:#ff5252"
                     return "color:#ffc107"
 
-                styled = result_df.style.applymap(style_rec, subset=["Recommendation"])
+                styled = result_df.style.map(style_rec, subset=["Recommendation"])
                 st.dataframe(styled, use_container_width=True, height=600)
 
                 buy_tickers = [r["Ticker"] for r in rows if "BUY" in r["Recommendation"]]
@@ -655,6 +677,106 @@ with tab5:
             st.error(f"Scan error: {e}")
     else:
         st.info("Click **Scan Full Watchlist** to run the ~100-stock scan.")
+
+
+# ══════════════════════════════════════════════
+# TAB 6 — All News
+# ══════════════════════════════════════════════
+with tab6:
+    st.markdown("### 🗞️ All News — every headline for your watchlist, newest first")
+
+    n_col1, n_col2, n_col3 = st.columns([2, 2, 2])
+    with n_col1:
+        news_scope = st.radio(
+            "Scope",
+            ["Sidebar watchlist (fast)", "Full ~100-stock watchlist"],
+            index=0,
+            help="Sidebar list uses ~15 News-API requests. The full list uses ~100 — "
+                 "can exhaust a free-tier daily quota in one click.",
+        )
+    with n_col2:
+        news_sentiment_filter = st.selectbox(
+            "Filter", ["All", "Bullish only", "Bearish only", "Neutral only"], index=0
+        )
+    with n_col3:
+        news_ticker_filter = st.multiselect("Only these tickers (optional)", options=sorted(
+            config.WATCHLIST if news_scope.startswith("Full") else tickers
+        ))
+
+    run_news = st.button("🗞️ Fetch All News", type="primary", use_container_width=False)
+
+    @st.cache_data(ttl=900, show_spinner="Fetching headlines...")
+    def run_news_feed(tickers_tuple):
+        tickers_list = list(tickers_tuple)
+        news_dict = news_analyzer.analyze_multiple(tickers_list)
+        feed = []
+        for tk, info in news_dict.items():
+            for art in info.get("articles", []):
+                feed.append({
+                    "ticker":    tk,
+                    "title":     art["title"],
+                    "source":    art["source"],
+                    "url":       art["url"],
+                    "published": art["published"],
+                    "score":     art["score"],
+                })
+        # Newest first (falls back to ticker order for missing/blank dates)
+        feed.sort(key=lambda a: a["published"], reverse=True)
+        return feed
+
+    if run_news:
+        st.cache_data.clear()
+
+    if "news_feed_ran" not in st.session_state:
+        st.session_state["news_feed_ran"] = False
+    if run_news:
+        st.session_state["news_feed_ran"] = True
+
+    if st.session_state["news_feed_ran"]:
+        try:
+            scope_tickers = config.WATCHLIST if news_scope.startswith("Full") else tickers
+            feed = run_news_feed(tuple(scope_tickers))
+
+            if news_ticker_filter:
+                feed = [a for a in feed if a["ticker"] in news_ticker_filter]
+            if news_sentiment_filter == "Bullish only":
+                feed = [a for a in feed if a["score"] > 0.1]
+            elif news_sentiment_filter == "Bearish only":
+                feed = [a for a in feed if a["score"] < -0.1]
+            elif news_sentiment_filter == "Neutral only":
+                feed = [a for a in feed if -0.1 <= a["score"] <= 0.1]
+
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("📰 Headlines", len(feed))
+            b2.metric("🟢 Bullish", len([a for a in feed if a["score"] > 0.1]))
+            b3.metric("🔴 Bearish", len([a for a in feed if a["score"] < -0.1]))
+            b4.metric("🟡 Neutral", len([a for a in feed if -0.1 <= a["score"] <= 0.1]))
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            if not feed:
+                st.info("No headlines match the current filters.")
+            else:
+                for art in feed:
+                    score = art["score"]
+                    score_cls = "pos-score" if score > 0.1 else "neg-score" if score < -0.1 else "neu-score"
+                    score_icon = "🟢" if score > 0.1 else "🔴" if score < -0.1 else "🟡"
+                    st.markdown(f"""
+                    <div class="news-card">
+                        <span style="background:#2d2f45;color:#4fc3f7;border-radius:6px;padding:2px 8px;font-weight:bold;font-size:12px;">{art['ticker']}</span>
+                        &nbsp;{score_icon} <span class="{score_cls}">{score:+.2f}</span> &nbsp;
+                        <a href="{art['url']}" target="_blank" style="color:#4fc3f7;text-decoration:none;">
+                            {art['title']}
+                        </a>
+                        <div class="muted">{art['source']} · {art['published']}</div>
+                    </div>""", unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"News feed error: {e}")
+    else:
+        st.info(
+            "Click **Fetch All News** to pull every headline for your watchlist into one feed. "
+            "Uses the News API quota — pick 'Sidebar watchlist' to keep it light."
+        )
 
 
 # ─────────────────────────────────────────────────────────────
