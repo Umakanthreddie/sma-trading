@@ -113,19 +113,25 @@ with st.sidebar:
     st.markdown("### 📋 Watchlist")
     use_dynamic = getattr(config, "USE_DYNAMIC_WATCHLIST", False)
     if use_dynamic:
-        st.caption(
-            "🔥 Dynamic mode: auto-picked from the S&P 500 by momentum + news "
-            "sentiment. See the 🔥 Dynamic Picks tab for why. Edit below to "
-            "override for this session."
-        )
-        try:
-            dyn_data = dynamic_watchlist.build_watchlist()
-            default_tickers = dyn_data["tickers"] or config.AUTO_TRADE_WATCHLIST
+        # Non-blocking: reads the cache only, never triggers a fresh ~500-stock
+        # scan here. Building it happens only via the explicit "Recompute Now"
+        # button in the 🔥 Dynamic Picks tab, where progress can be shown.
+        dyn_data = dynamic_watchlist.get_cached_watchlist_only()
+        if dyn_data and dyn_data.get("tickers"):
+            default_tickers = dyn_data["tickers"]
             built_at = dyn_data.get("built_at", "")[:16].replace("T", " ")
-            st.caption(f"Built: {built_at}" if built_at else "")
-        except Exception as e:
+            st.caption(
+                "🔥 Dynamic mode: auto-picked from the S&P 500 by momentum + "
+                f"news sentiment. Built: {built_at}. See the 🔥 Dynamic Picks "
+                "tab for why. Edit below to override for this session."
+            )
+        else:
             default_tickers = getattr(config, "AUTO_TRADE_WATCHLIST", config.WATCHLIST[:15])
-            st.caption(f"⚠️ Dynamic pick failed ({e}) — using fixed fallback list.")
+            st.caption(
+                "🔥 Dynamic mode is on but hasn't been built yet — using the "
+                "fixed fallback list for now. Open the 🔥 Dynamic Picks tab "
+                "and click 'Recompute Now' (takes a few minutes, one-time)."
+            )
     else:
         default_tickers = getattr(config, "AUTO_TRADE_WATCHLIST", config.WATCHLIST[:15])
         st.caption("Static list. For the full ~100-stock scan, use the 🎯 Manual Signals tab.")
@@ -828,10 +834,25 @@ with tab7:
     with dp_col1:
         recompute = st.button("🔄 Recompute Now", type="primary")
     with dp_col2:
-        st.caption(f"Cached for {cache_hrs}h between recomputes to limit news-API usage on scheduled runs.")
+        st.caption(f"Cached for {cache_hrs}h between recomputes to limit news-API usage on scheduled runs. "
+                   f"First build scans ~503 stocks and takes a few minutes.")
 
     try:
-        data = dynamic_watchlist.build_watchlist(force_refresh=recompute)
+        cached = dynamic_watchlist.get_cached_watchlist_only()
+
+        if recompute or cached is None:
+            progress_bar = st.progress(0, text="Scanning S&P 500 momentum (stage 1 of 2)...")
+
+            def _progress(i, total):
+                pct = min(int(i / total * 100), 100)
+                progress_bar.progress(pct, text=f"Scanning S&P 500 momentum (stage 1 of 2)... {i}/{total}")
+
+            with st.spinner(f"Building the dynamic watchlist — checking news sentiment on the top {pool_n} (stage 2 of 2)..."):
+                data = dynamic_watchlist.build_watchlist(force_refresh=True, progress_callback=_progress)
+            progress_bar.empty()
+        else:
+            data = cached
+
         built_at = data.get("built_at", "")[:16].replace("T", " ")
         if built_at:
             st.caption(f"Last built: {built_at}")

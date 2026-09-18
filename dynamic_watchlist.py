@@ -51,6 +51,20 @@ def _load_cache():
         return None
 
 
+def get_cached_watchlist_only():
+    """
+    Non-blocking read: returns the cached result if one exists (even if
+    stale) without ever triggering a fresh scan. Use this anywhere that
+    must never block on a ~500-stock scan (e.g. the sidebar on page load) —
+    only the explicit 'Recompute Now' button in the Dynamic Picks tab
+    should trigger build_watchlist()'s actual scan.
+
+    Returns None if no cache file exists yet (i.e. the dynamic watchlist
+    has never been built in this deployment).
+    """
+    return _load_cache()
+
+
 def _save_cache(data: dict):
     os.makedirs(config.DATA_CACHE_DIR, exist_ok=True)
     with open(CACHE_FILE, "w") as f:
@@ -60,14 +74,22 @@ def _save_cache(data: dict):
 # ─────────────────────────────────────────────
 # Stage 1 — momentum scan, S&P 500 only, no news calls
 # ─────────────────────────────────────────────
-def _momentum_pool(pool_size: int) -> list:
-    """Score every S&P 500 stock on price/volume momentum, return the top N."""
+def _momentum_pool(pool_size: int, progress_callback=None) -> list:
+    """
+    Score every S&P 500 stock on price/volume momentum, return the top N.
+    Optional progress_callback(i, total) is called after each ticker so a
+    caller (e.g. the dashboard) can show a progress bar — this is a slow,
+    ~500-request scan and must never run silently/blocking without feedback.
+    """
     tickers = stock_scanner.get_sp500_tickers()
+    total = len(tickers)
     results = []
-    for t in tickers:
+    for i, t in enumerate(tickers):
         r = stock_scanner._score_ticker(t)
         if r:
             results.append(r)
+        if progress_callback:
+            progress_callback(i + 1, total)
     results.sort(key=lambda r: r["Score"], reverse=True)
     return results[:pool_size]
 
@@ -75,7 +97,7 @@ def _momentum_pool(pool_size: int) -> list:
 # ─────────────────────────────────────────────
 # Stage 2 — news sentiment on the pool, then combine
 # ─────────────────────────────────────────────
-def build_watchlist(force_refresh: bool = False) -> dict:
+def build_watchlist(force_refresh: bool = False, progress_callback=None) -> dict:
     """
     Returns:
         {
@@ -85,6 +107,10 @@ def build_watchlist(force_refresh: bool = False) -> dict:
           "pool_detail": same shape, for the whole momentum pool (not just picks),
           "built_at":    ISO timestamp string,
         }
+
+    This scans ~500 stocks and is slow (several minutes on a cold cache) —
+    callers that run in a UI must pass progress_callback(i, total) and show
+    it to the user rather than calling this silently/blocking.
     """
     if not force_refresh and _cache_valid():
         cached = _load_cache()
@@ -94,7 +120,7 @@ def build_watchlist(force_refresh: bool = False) -> dict:
     pool_size = getattr(config, "DYNAMIC_WATCHLIST_POOL", 25)
     top_n     = getattr(config, "DYNAMIC_WATCHLIST_SIZE", 15)
 
-    pool = _momentum_pool(pool_size)
+    pool = _momentum_pool(pool_size, progress_callback=progress_callback)
     pool_tickers = [r["Ticker"] for r in pool]
 
     news_dict = news_analyzer.analyze_multiple(pool_tickers) if pool_tickers else {}
