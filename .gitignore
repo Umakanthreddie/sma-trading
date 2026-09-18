@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+cache/
+charts/
+paper_portfolio.json
+auto_trade_log.jsonl
+scheduler_output.log
