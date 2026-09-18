@@ -1,7 +1,10 @@
-﻿# setup_scheduled_task.ps1 - one-time setup for the 2-week paper-trading test.
+﻿# setup_scheduled_task.ps1 - one-time setup for the ongoing paper-trading test.
 # Installs dependencies and registers a Windows scheduled task that runs
-# the auto-trader every 30 minutes, weekdays, during market hours, for 14 days.
-# After 14 days the task's trigger expires automatically and stops firing.
+# the auto-trader every 15 minutes, weekdays, during market hours, indefinitely.
+# auto_trade_runner.py's assert_paper_mode() hard-refuses to run unless
+# BROKER is "paper" (or "webull" with WEBULL_PAPER=True), so this can be left
+# running indefinitely without any real-money risk. Run
+# Unregister-ScheduledTask -TaskName SMA-Trader-AutoTrade any time to stop it.
 
 $ErrorActionPreference = "Stop"
 $projectDir = $PSScriptRoot
@@ -22,23 +25,21 @@ $trigger = New-ScheduledTaskTrigger -Weekly `
     -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday `
     -At "9:35AM"
 $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At "9:35AM" `
-    -RepetitionInterval (New-TimeSpan -Minutes 30) `
+    -RepetitionInterval (New-TimeSpan -Minutes 15) `
     -RepetitionDuration (New-TimeSpan -Hours 6 -Minutes 25)).Repetition
-
-# Auto-expire after 14 days - the task stops firing on its own after this.
-$endDate = (Get-Date).AddDays(14)
-$trigger.EndBoundary = $endDate.ToString("yyyy-MM-ddTHH:mm:ss")
 
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 20)
+    -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
-    -Settings $settings -Description "SMA-trader paper-trading test - auto-expires $($endDate.ToString('yyyy-MM-dd'))" | Out-Null
+    -Settings $settings -Description "SMA-trader paper-trading test - runs indefinitely (paper mode only)" | Out-Null
 
 Write-Host ""
 Write-Host "Done. Scheduled task '$taskName' created." -ForegroundColor Green
-Write-Host "It will run every 30 minutes, weekdays, 9:35 AM - ~4:00 PM ET, and auto-expire on $($endDate.ToString('yyyy-MM-dd'))."
+Write-Host "It will run every 15 minutes, weekdays, 9:35 AM - ~4:00 PM ET, indefinitely."
+Write-Host "It only ever trades in paper mode - auto_trade_runner.py refuses to run otherwise."
+Write-Host "To stop it later: Unregister-ScheduledTask -TaskName $taskName"
 Write-Host "Output logs to: $projectDir\scheduler_output.log and auto_trade_log.jsonl"
 Write-Host ""
 Write-Host "To test it right now instead of waiting for the next scheduled hour, run:"
