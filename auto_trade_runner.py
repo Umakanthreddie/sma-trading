@@ -40,6 +40,7 @@ import config
 import data_fetcher
 import news_analyzer
 import ai_predictor
+import dynamic_watchlist
 import trader
 from risk_manager import RiskManager
 
@@ -95,9 +96,17 @@ def run():
         log_event({"event": "skipped", "reason": "outside_market_hours"})
         return
 
-    tickers = list(getattr(config, "AUTO_TRADE_WATCHLIST", config.WATCHLIST))
+    if getattr(config, "USE_DYNAMIC_WATCHLIST", False):
+        tickers = dynamic_watchlist.get_watchlist_tickers()
+        list_source = "dynamic (S&P 500, momentum + news)"
+    else:
+        tickers = list(getattr(config, "AUTO_TRADE_WATCHLIST", config.WATCHLIST))
+        list_source = "fixed AUTO_TRADE_WATCHLIST"
+
     print(f"\n  🤖 Auto-trade run starting — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"     Mode: {'PAPER' if config.PAPER_TRADING else 'LIVE'} | Broker: {config.BROKER} | Tickers: {len(tickers)}")
+    print(f"     Mode: {'PAPER' if config.PAPER_TRADING else 'LIVE'} | Broker: {config.BROKER} | "
+          f"Tickers: {len(tickers)} ({list_source})")
+    print(f"     Watchlist: {', '.join(tickers)}")
 
     try:
         data_dict = data_fetcher.fetch_multiple(tickers)

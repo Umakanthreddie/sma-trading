@@ -2,13 +2,19 @@
 news_analyzer.py — Fetch and analyze news sentiment for stocks.
 
 Uses:
-  - NewsAPI to fetch recent headlines
+  - Yahoo Finance (via yfinance) for headlines — free, no API key, no daily
+    quota. This is the default source (config.NEWS_SOURCE = "yahoo").
+  - NewsAPI.org as an optional second source — needs config.NEWS_API_KEY,
+    free tier caps at ~100 requests/day. Set NEWS_SOURCE = "newsapi" to use
+    only this, or "both" to use Yahoo first and top up with NewsAPI when
+    Yahoo comes back short.
   - VADER Sentiment to score each headline (-1.0 to +1.0)
 """
 
 from datetime import datetime, timedelta
 
 import requests
+import yfinance as yf
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 import config
@@ -17,11 +23,68 @@ _analyzer = SentimentIntensityAnalyzer()
 
 
 # ─────────────────────────────────────────────
-# Fetch headlines from NewsAPI
+# Fetch headlines — Yahoo Finance (free, unlimited-ish, default)
 # ─────────────────────────────────────────────
-def fetch_news(ticker: str, company_name: str = "") -> list:
+def _fetch_news_yahoo(ticker: str) -> list:
     """
-    Fetch recent news headlines for a stock ticker.
+    Fetch recent headlines via yfinance's Yahoo Finance news feed.
+    Free, no API key, no hard daily cap — unlike NewsAPI's 100/day free tier.
+
+    Returns article dicts shaped the same as NewsAPI's so the rest of this
+    module (and callers) don't need to know which source was used:
+    {title, description, url, publishedAt, source: {name}}.
+    """
+    try:
+        raw = yf.Ticker(ticker).news or []
+    except Exception:
+        return []
+
+    articles = []
+    for item in raw:
+        # yfinance >= 0.2.40 nests fields under "content"; older versions
+        # put them at the top level. Handle both shapes.
+        c = item.get("content", item) if isinstance(item, dict) else {}
+
+        title = c.get("title") or ""
+        if not title:
+            continue
+        summary = c.get("summary") or c.get("description") or ""
+
+        url = ""
+        if isinstance(c.get("canonicalUrl"), dict):
+            url = c["canonicalUrl"].get("url", "")
+        if not url and isinstance(c.get("clickThroughUrl"), dict):
+            url = c["clickThroughUrl"].get("url", "")
+        if not url:
+            url = c.get("link", "")
+
+        source_name = "Yahoo Finance"
+        if isinstance(c.get("provider"), dict):
+            source_name = c["provider"].get("displayName", source_name)
+        elif c.get("publisher"):
+            source_name = c["publisher"]
+
+        pub = c.get("pubDate") or c.get("providerPublishTime") or ""
+        if isinstance(pub, (int, float)):
+            pub = datetime.fromtimestamp(pub).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        articles.append({
+            "title":       title,
+            "description": summary,
+            "url":         url,
+            "publishedAt": pub,
+            "source":      {"name": source_name},
+        })
+
+    return articles[: config.NEWS_MAX_ARTICLES]
+
+
+# ─────────────────────────────────────────────
+# Fetch headlines — NewsAPI.org (optional, quota-limited)
+# ─────────────────────────────────────────────
+def _fetch_news_newsapi(ticker: str, company_name: str = "") -> list:
+    """
+    Fetch recent news headlines from NewsAPI.org.
 
     Args:
         ticker:       Stock symbol (e.g. "AAPL")
@@ -30,6 +93,9 @@ def fetch_news(ticker: str, company_name: str = "") -> list:
     Returns:
         List of article dicts with: title, description, url, publishedAt, source
     """
+    if not getattr(config, "NEWS_API_KEY", ""):
+        return []
+
     query = company_name if company_name else ticker
     from_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
 
@@ -54,6 +120,34 @@ def fetch_news(ticker: str, company_name: str = "") -> list:
         return data.get("articles", [])
     except Exception:
         return []
+
+
+# ─────────────────────────────────────────────
+# Fetch headlines — picks source(s) per config.NEWS_SOURCE
+# ─────────────────────────────────────────────
+def fetch_news(ticker: str, company_name: str = "") -> list:
+    """
+    Fetch recent news headlines for a stock ticker, routed through whichever
+    source(s) config.NEWS_SOURCE selects:
+      "yahoo"   — Yahoo Finance only (default; free, no daily cap)
+      "newsapi" — NewsAPI.org only (needs NEWS_API_KEY; ~100/day free tier)
+      "both"    — Yahoo first, then top up remaining slots with NewsAPI
+
+    Returns:
+        List of article dicts with: title, description, url, publishedAt, source
+    """
+    source_mode = getattr(config, "NEWS_SOURCE", "yahoo")
+
+    articles = []
+    if source_mode in ("yahoo", "both"):
+        articles = _fetch_news_yahoo(ticker)
+
+    if source_mode == "newsapi" or (
+        source_mode == "both" and len(articles) < config.NEWS_MAX_ARTICLES
+    ):
+        articles += _fetch_news_newsapi(ticker, company_name)
+
+    return articles[: config.NEWS_MAX_ARTICLES]
 
 
 # ─────────────────────────────────────────────

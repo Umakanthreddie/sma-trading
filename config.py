@@ -11,7 +11,19 @@ in the Webull app yourself.
 """
 
 # ─────────────────────────────────────────────
-# NEWS API
+# NEWS SOURCE
+# "yahoo"   → Yahoo Finance via yfinance. Free, no API key, no hard daily
+#             cap — this is the default now, so the 100/day NewsAPI quota
+#             is no longer the bottleneck for scanning.
+# "newsapi" → NewsAPI.org only. Needs NEWS_API_KEY below. Free tier caps
+#             at ~100 requests/day.
+# "both"    → Yahoo first, then top up remaining article slots with
+#             NewsAPI (uses your quota only when Yahoo comes back short).
+# ─────────────────────────────────────────────
+NEWS_SOURCE = "yahoo"
+
+# ─────────────────────────────────────────────
+# NEWS API (NewsAPI.org — only used when NEWS_SOURCE is "newsapi" or "both")
 # ─────────────────────────────────────────────
 NEWS_API_KEY      = "2e027fff58f94ff6a35d8e7c4a31ee03"
 NEWS_MAX_ARTICLES = 10
@@ -77,11 +89,29 @@ TOP_STOCKS_COUNT   = 50      # Top N to display after scoring
 SCANNER_CACHE_HRS  = 6       # Hours to cache scan results
 
 # ─────────────────────────────────────────────
-# AUTO_TRADE_WATCHLIST — used by the scheduled background test
-# (auto_trade_runner.py). Kept small deliberately: with 15 tickers x
-# ~13 runs/day at 30-min intervals, news lookups already run close to
-# the free News-API daily quota. This is what the 2-week paper test
-# actually trades against.
+# DYNAMIC WATCHLIST — instead of trading the same fixed tickers every run,
+# auto-pick the watchlist from the S&P 500:
+#   Stage 1: score every S&P 500 stock on price/volume momentum only
+#            (free — yfinance price data, no news calls).
+#   Stage 2: run news sentiment on just the top DYNAMIC_WATCHLIST_POOL of
+#            those (a small pool, so this stays cheap even on NewsAPI).
+#   Result:  the best DYNAMIC_WATCHLIST_SIZE by a combined
+#            (momentum + sentiment) score become the actual trading list.
+# The result is cached for DYNAMIC_WATCHLIST_CACHE_HRS hours (see
+# dynamic_watchlist.py) so scheduled runs every 30 min don't recompute —
+# and don't re-spend news calls — every single time.
+# Set USE_DYNAMIC_WATCHLIST = False to fall back to the fixed
+# AUTO_TRADE_WATCHLIST below.
+# ─────────────────────────────────────────────
+USE_DYNAMIC_WATCHLIST      = True
+DYNAMIC_WATCHLIST_SIZE     = 15   # final number of tickers actually traded
+DYNAMIC_WATCHLIST_POOL     = 25   # top-N by momentum considered before news scoring
+DYNAMIC_WATCHLIST_CACHE_HRS = 12  # how often to recompute (2x/day by default)
+
+# ─────────────────────────────────────────────
+# AUTO_TRADE_WATCHLIST — fixed fallback list, used only when
+# USE_DYNAMIC_WATCHLIST = False, or if the dynamic pick fails for some
+# reason (network error, empty S&P 500 fetch, etc).
 # ─────────────────────────────────────────────
 AUTO_TRADE_WATCHLIST = [
     "AAPL", "TSLA", "GOOGL", "MSFT", "AMZN",

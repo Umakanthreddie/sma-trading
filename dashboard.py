@@ -10,6 +10,8 @@ Tabs:
                         to place yourself in the Webull app
   🗞️ All News        — Every headline for your watchlist in one feed,
                         newest first, with sentiment color-coding
+  🔥 Dynamic Picks   — How the auto-trade watchlist is chosen from the
+                        S&P 500 (momentum + news sentiment), and why
 
 Run:
   streamlit run dashboard.py
@@ -29,6 +31,7 @@ import strategy
 import news_analyzer
 import ai_predictor
 import stock_scanner
+import dynamic_watchlist
 import trader
 from risk_manager import RiskManager
 
@@ -64,7 +67,7 @@ section[data-testid="stSidebar"] { background-color: #1a1d2e; }
 .ai-score-bar     { height:8px; border-radius:4px; margin-top:4px; }
 .ticker-hdr       { font-size:20px; font-weight:bold; }
 .price-big        { font-size:26px; font-weight:bold; color:#4fc3f7; }
-.muted            { color:#aaa; font-size:12px; }
+.muted            { color:#b8bcd0; font-size:12px; }
 .bull             { color:#00e676; }
 .bear             { color:#ff5252; }
 
@@ -108,10 +111,28 @@ with st.sidebar:
     st.markdown("---")
 
     st.markdown("### 📋 Watchlist")
-    st.caption("Small list for the tabs below (fast, low API usage). For the full ~100-stock scan, use the 🎯 Manual Signals tab.")
+    use_dynamic = getattr(config, "USE_DYNAMIC_WATCHLIST", False)
+    if use_dynamic:
+        st.caption(
+            "🔥 Dynamic mode: auto-picked from the S&P 500 by momentum + news "
+            "sentiment. See the 🔥 Dynamic Picks tab for why. Edit below to "
+            "override for this session."
+        )
+        try:
+            dyn_data = dynamic_watchlist.build_watchlist()
+            default_tickers = dyn_data["tickers"] or config.AUTO_TRADE_WATCHLIST
+            built_at = dyn_data.get("built_at", "")[:16].replace("T", " ")
+            st.caption(f"Built: {built_at}" if built_at else "")
+        except Exception as e:
+            default_tickers = getattr(config, "AUTO_TRADE_WATCHLIST", config.WATCHLIST[:15])
+            st.caption(f"⚠️ Dynamic pick failed ({e}) — using fixed fallback list.")
+    else:
+        default_tickers = getattr(config, "AUTO_TRADE_WATCHLIST", config.WATCHLIST[:15])
+        st.caption("Static list. For the full ~100-stock scan, use the 🎯 Manual Signals tab.")
+
     watchlist_input = st.text_area(
         "One ticker per line:",
-        value="\n".join(getattr(config, "AUTO_TRADE_WATCHLIST", config.WATCHLIST[:15])),
+        value="\n".join(default_tickers),
         height=180,
     )
     tickers = [t.strip().upper() for t in watchlist_input.strip().splitlines() if t.strip()]
@@ -123,7 +144,8 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🔄 Refresh")
-    auto_refresh = st.toggle("Auto-refresh", value=True)
+    st.caption("Off by default — this holds the app open in a sleep loop, which wastes resources on a free cloud deploy. Click the Refresh button above instead, or turn this on only when running locally.")
+    auto_refresh = st.toggle("Auto-refresh", value=False)
     refresh_mins = st.selectbox("Interval (min)", [1, 5, 10, 15, 30], index=1)
 
     st.markdown("---")
@@ -153,13 +175,14 @@ st.markdown("---")
 # ─────────────────────────────────────────────────────────────
 # Tabs
 # ─────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📊 Live Signals",
     "🔍 Top Stocks",
     "📰 AI Predictions",
     "🤖 Auto-Trader",
     "🎯 Manual Signals",
     "🗞️ All News",
+    "🔥 Dynamic Picks",
 ])
 
 
@@ -777,6 +800,77 @@ with tab6:
             "Click **Fetch All News** to pull every headline for your watchlist into one feed. "
             "Uses the News API quota — pick 'Sidebar watchlist' to keep it light."
         )
+
+
+# ══════════════════════════════════════════════
+# TAB 7 — Dynamic Picks
+# ══════════════════════════════════════════════
+with tab7:
+    st.markdown("### 🔥 Dynamic Picks — auto-selected from the S&P 500")
+
+    pool_n = getattr(config, "DYNAMIC_WATCHLIST_POOL", 25)
+    size_n = getattr(config, "DYNAMIC_WATCHLIST_SIZE", 15)
+    cache_hrs = getattr(config, "DYNAMIC_WATCHLIST_CACHE_HRS", 12)
+
+    st.caption(
+        f"Stage 1: every S&P 500 stock (~503) is scored on price/volume momentum only — free, no news calls. "
+        f"Stage 2: news sentiment is checked on just the top {pool_n} of those. "
+        f"The best {size_n} by a combined score (60% momentum + 40% sentiment) become the actual auto-trade watchlist."
+    )
+
+    if not getattr(config, "USE_DYNAMIC_WATCHLIST", False):
+        st.warning(
+            "USE_DYNAMIC_WATCHLIST is off in config.py — the scheduled auto-trader is currently using the "
+            "fixed AUTO_TRADE_WATCHLIST instead. This tab still shows what the dynamic pick *would* be."
+        )
+
+    dp_col1, dp_col2 = st.columns([1, 3])
+    with dp_col1:
+        recompute = st.button("🔄 Recompute Now", type="primary")
+    with dp_col2:
+        st.caption(f"Cached for {cache_hrs}h between recomputes to limit news-API usage on scheduled runs.")
+
+    try:
+        data = dynamic_watchlist.build_watchlist(force_refresh=recompute)
+        built_at = data.get("built_at", "")[:16].replace("T", " ")
+        if built_at:
+            st.caption(f"Last built: {built_at}")
+
+        rows = []
+        picked_tickers = set(data.get("tickers", []))
+        for d in data.get("pool_detail", []):
+            rows.append({
+                "Picked":          "✅" if d["ticker"] in picked_tickers else "",
+                "Ticker":          d["ticker"],
+                "Combined Score":  d["combined_score"],
+                "Momentum":        d["momentum_score"],
+                "Sentiment":       d["sentiment_label"],
+                "Sentiment Score": round(d["sentiment_score"], 2),
+                "Articles":        d["article_count"],
+            })
+
+        if not rows:
+            st.info("No results yet — click **Recompute Now** to run the scan.")
+        else:
+            picks_df = pd.DataFrame(rows)
+
+            def color_combined(val):
+                if val >= 70: return "background-color:#003d1f; color:#00e676"
+                if val >= 55: return "background-color:#1a2d00; color:#8bc34a"
+                if val <= 35: return "background-color:#3d0000; color:#ff5252"
+                return ""
+
+            styled = picks_df.style.map(color_combined, subset=["Combined Score"])
+            st.dataframe(styled, use_container_width=True, height=560)
+
+            st.caption(
+                f"✅ = one of the {len(picked_tickers)} tickers currently selected. "
+                "These feed the scheduled auto-trader and the sidebar's default watchlist "
+                "when USE_DYNAMIC_WATCHLIST is on — edit the sidebar list to override for this session only."
+            )
+    except Exception as e:
+        st.error(f"Dynamic watchlist error: {e}")
+        st.exception(e)
 
 
 # ─────────────────────────────────────────────────────────────

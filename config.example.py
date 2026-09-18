@@ -7,7 +7,14 @@ never get committed to this repo.
 """
 
 # ─────────────────────────────────────────────
-# NEWS API
+# NEWS SOURCE
+# "yahoo" (default) = free, no API key, no daily cap. "newsapi" or "both"
+# use NEWS_API_KEY below (NewsAPI free tier caps at ~100 requests/day).
+# ─────────────────────────────────────────────
+NEWS_SOURCE = "yahoo"
+
+# ─────────────────────────────────────────────
+# NEWS API (NewsAPI.org — only used when NEWS_SOURCE is "newsapi" or "both")
 # ─────────────────────────────────────────────
 NEWS_API_KEY      = ""  # <-- put your newsapi.org key here
 NEWS_MAX_ARTICLES = 10
@@ -73,11 +80,17 @@ TOP_STOCKS_COUNT   = 50      # Top N to display after scoring
 SCANNER_CACHE_HRS  = 6       # Hours to cache scan results
 
 # ─────────────────────────────────────────────
-# AUTO_TRADE_WATCHLIST — used by the scheduled background test
-# (auto_trade_runner.py). Kept small deliberately: with 15 tickers x
-# ~13 runs/day at 30-min intervals, news lookups already run close to
-# the free News-API daily quota. This is what the 2-week paper test
-# actually trades against.
+# DYNAMIC WATCHLIST — auto-pick the traded tickers from the S&P 500 by
+# momentum + news sentiment instead of a fixed list. See dynamic_watchlist.py.
+# ─────────────────────────────────────────────
+USE_DYNAMIC_WATCHLIST      = True
+DYNAMIC_WATCHLIST_SIZE     = 15
+DYNAMIC_WATCHLIST_POOL     = 25
+DYNAMIC_WATCHLIST_CACHE_HRS = 12
+
+# ─────────────────────────────────────────────
+# AUTO_TRADE_WATCHLIST — fixed fallback, used only when
+# USE_DYNAMIC_WATCHLIST = False or if the dynamic pick fails.
 # ─────────────────────────────────────────────
 AUTO_TRADE_WATCHLIST = [
     "AAPL", "TSLA", "GOOGL", "MSFT", "AMZN",
